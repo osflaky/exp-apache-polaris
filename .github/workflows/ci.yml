@@ -1,0 +1,94 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+name: CI
+
+on:
+  workflow_dispatch:
+jobs:
+  build-checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: macos-latest
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest--arm64
+    name: Gradle Build Checks [${{ matrix.expander_leg }}]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Set up JDK 21
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6   # v6.0.1
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+    - name: Setup test environment
+      uses: ./.github/actions/setup-test-env
+    - name: Prepare Gradle build cache
+      uses: ./.github/actions/ci-incr-build-cache-prepare
+    - name: Run Checks
+      env:
+        GRADLE_TOS_ACCEPTED: ${{ vars.GRADLE_TOS_ACCEPTED }}
+        DEVELOCITY_SERVER: ${{ vars.DEVELOCITY_SERVER }}
+        DEVELOCITY_PROJECT_ID: ${{ vars.DEVELOCITY_PROJECT_ID }}
+        DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}   # zizmor: ignore[secrets-outside-env]
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # zizmor: ignore[secrets-outside-env]
+      run: |
+        ./gradlew check sourceTarball distTar distZip publishToMavenLocal \
+          -x :polaris-runtime-service:test \
+          -x :polaris-admin:test \
+          -PnoIntegrationTests \
+          --continue
+    - name: Verify configuration reference is up to date
+      run: make config-doc-verify
+    - name: Save partial Gradle build cache
+      uses: ./.github/actions/ci-incr-build-cache-save
+    - name: Archive test results
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      if: failure()
+      with:
+        name: upload-${{ github.job }}-artifacts
+        path: &test-archive-path |
+          **/build/test-results/**
+          **/build/reports/tests/**
+      #
+      # The following are not strictly "Gradle build checks", but run quite fast.
+      #
+      # Adding separate jobs for these requires a new GH runner instance, which requires even more resources.
+      #
+    - name: Verify Copilot instructions
+      run: .github/scripts/check-copilot-instructions.sh
+    - name: Set up Node 24
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020   # v7.0.0
+      with:
+        node-version: '24'
+    - name: Renovate Configuration Validation
+      run: npx --yes --package renovate renovate-config-validator --strict 
+        --no-global .github/renovate.json5
+      # Intentionally unpinned to always use the latest allowlist from the ASF.
+    - uses: apache/infrastructure-actions/allowlist-check@main   # zizmor: ignore[unpinned-uses]
+
+    timeout-minutes: 150
